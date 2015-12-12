@@ -22,10 +22,10 @@ Usage
 
 To add an encrypted message to the image file, use the encryption script:
 
-    python enc_jpg.py image.jpg “My secret message.”
+    python enc_jpg.py image.jpg "Â“My secret message."Â”
 
 This script will output the key as a base64 encoded string. The receiver needs this key in order to decrypt the message.
 
 To decrypt the message, use the decryption script:
 
-    python dec_jpg.py image.jpg “Hb3lBC3P8bBmrDd1W203wTxV9ZoBQm48ol//nuBfQB8=”
+    python dec_jpg.py image.jpg Â“"Hb3lBC3P8bBmrDd1W203wTxV9ZoBQm48ol//nuBfQB8="Â”
