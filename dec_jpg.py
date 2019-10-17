@@ -1,6 +1,7 @@
+#!/usr/bin/env python
 """
     Copyright (C) 2015 Carter Yagemann
-    
+
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
     the Free Software Foundation, either version 3 of the License, or
@@ -11,44 +12,63 @@
     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
     GNU General Public License for more details.
 """
-
 import base64
 import sys
 import struct
-from Crypto.Cipher import AES
+
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 if len(sys.argv) != 3:
-    print "Usage: dec_jpg.py <jpg_file> <key>"
-    sys.exit()
+    sys.stdout.write("Usage: dec_jpg.py <jpg_file> <password>\n")
+    sys.exit(1)
 
-# Key is base64 encoded to make copy-paste easier, so decode it
-key = base64.b64decode(sys.argv[2])
+backend = default_backend()
 
-# Load JPG to memory
-try:
-    jpg_file = open(sys.argv[1], "rb")
-    jpg_data = jpg_file.read()
-    jpg_file.close()
-except:
-    print "Failed to load image file."
-    sys.exit()
+jpg_file, password = sys.argv[1:3]
+
+# load JPG
+with open(jpg_file, 'rb') as ifile:
+    jpg = ifile.read()
 
 # 0xFF, 0xD8 marks the start of a JPG
-soi = jpg_data.find("\xFF\xD8")
+soi = jpg.find(b"\xFF\xD8")
 if soi < 0:
-    print "Failed to find start of image, is this a JPG?"
-    sys.exit()
+    sys.stderr.write("Failed to find start of image, is this a JPG?\n")
+    sys.exit(1)
+soi += 2
 
 # 0xFF, 0xFE marks the start of a JPG comment
-com = jpg_data.find("\xFF\xFE", soi)
+com = jpg.find(b"\xFF\xFE", soi)
 if com < 0:
-    print "Failed to find message."
-    sys.exit()
+    sys.stderr.write("Failed to find message.\n")
+    sys.exit(1)
 
-# two byte comment length, 16 byte IV, remainder is cipher text
-msg_len = struct.unpack('>H', jpg_data[com + 2:com + 4])[0]
-iv  = jpg_data[com + 4:com + 20]
-msg = jpg_data[com + 20:com + msg_len + 4]
+# two byte comment length, 16 byte IV, 16 byte salt, remainder is ciphertext
+msg_len    = struct.unpack('>H', jpg[com + 2:com + 4])[0]
+iv         = jpg[com + 4:com + 20]
+salt       = jpg[com + 20:com + 36]
+ciphertext = jpg[com + 36:com + msg_len + 4]
 
-suite = AES.new(key, AES.MODE_CBC, iv)
-print suite.decrypt(msg)
+# key stretching
+kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=100000,
+        backend=backend)
+
+key = kdf.derive(password.encode('utf8'))
+
+# decrypt and remove padding
+cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=backend)
+decryptor = cipher.decryptor()
+msg_padded = decryptor.update(ciphertext) + decryptor.finalize()
+
+unpadder = padding.PKCS7(256).unpadder()
+msg = unpadder.update(msg_padded) + unpadder.finalize()
+
+sys.stdout.write(msg.decode('utf8') + "\n")

@@ -1,6 +1,7 @@
+#!/usr/bin/env python
 """
     Copyright (C) 2015 Carter Yagemann
-    
+
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
     the Free Software Foundation, either version 3 of the License, or
@@ -11,58 +12,63 @@
     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
     GNU General Public License for more details.
 """
-
-import base64
 import os
 import sys
 import struct
-from Crypto.Cipher import AES
 
-if len(sys.argv) != 3:
-    print "Usage: enc_jpg.py <jpg_file> <message>"
-    sys.exit()
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-# Generate IV and key
-try:
-    key = os.urandom(32)
-    iv  = os.urandom(16)
-except NotImplementedError:
-    print "Failed to generate random key."
-    sys.exit()
-print "Key:", base64.b64encode(key)
+if len(sys.argv) != 4:
+    sys.stdout.write("Usage: enc_jpg.py <jpg_file> <password> <message>\n")
+    sys.exit(1)
 
-# Pad plain text with spaces because AES-CBC needs 16 byte blocks
-plain_text = sys.argv[2] + (" " * (16 - (len(sys.argv[2]) % 16)))
+jpg_file, password, msg = sys.argv[1:4]
 
-# Encrypt plain text
-suite = AES.new(key, AES.MODE_CBC, iv)
-cipher_text = suite.encrypt(plain_text)
+# crypto backend
+backend = default_backend()
 
-# Load JPG into memory
-try:
-    jpg_file = open(sys.argv[1], "rb")
-    jpg_data = jpg_file.read()
-    jpg_file.close()
-except:
-    print "Failed to load image file."
-    sys.exit()
+# generate IV, salt
+iv   = os.urandom(16)
+salt = os.urandom(16)
+
+# key stretching
+kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=100000,
+        backend=backend)
+
+key = kdf.derive(password.encode('utf8'))
+
+# message padding
+padder = padding.PKCS7(256).padder()
+msg_padded = padder.update(msg.encode('utf8'))
+msg_padded += padder.finalize()
+
+# encrypt message
+cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=backend)
+encryptor = cipher.encryptor()
+ciphertext = encryptor.update(msg_padded) + encryptor.finalize()
+
+# load JPG into memory
+with open(jpg_file, 'rb') as ifile:
+    jpg = ifile.read()
 
 # 0xFF, 0xD8 marks the start of a JPG
-soi = jpg_data.find("\xFF\xD8")
+soi = jpg.find(b"\xFF\xD8")
 if soi < 0:
-    print "Failed to find start of image, is this a JPG?"
-    sys.exit()
+    sys.stderr.write("Failed to find start of image, is this a JPG?\n")
+    sys.exit(1)
+soi += 2
 
 # JPG comment: 0xFF, 0xFE, two bytes (big-endian) comment length, comment
-msg = "\xFF\xFE" + struct.pack('>H', len(cipher_text) + 16) + iv + cipher_text
-# Insert comment into JPG
-jpg_data = jpg_data[:soi + 2] + msg + jpg_data[2 + soi:]
-
-# Write to file
-try:
-    jpg_file = open(sys.argv[1], "wb")
-    jpg_file.write(jpg_data)
-    jpg_file.close()
-except:
-    print "Failed to write message to image file."
-    sys.exit()
+jpg_comment = b"\xFF\xFE" + struct.pack('>H', len(ciphertext) + 32) + iv + salt + ciphertext
+# insert comment into JPG and write
+jpg = jpg[:soi] + jpg_comment + jpg[soi:]
+with open(jpg_file, 'wb') as ofile:
+    ofile.write(jpg)
